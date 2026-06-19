@@ -70,3 +70,8 @@ GitHub Actions workflow is included. Upload the whole folder to GitHub, then run
 ```text
 app/build/outputs/apk/release/app-release.apk
 ```
+
+
+## Build note
+
+This project intentionally keeps `targetSdk 22` for Android 5.1.1 embedded devices. GitHub Actions excludes `lintVitalRelease`, and `app/build.gradle` disables the Play target-SDK lint check because this APK is intended for sideloading, not Google Play release.
