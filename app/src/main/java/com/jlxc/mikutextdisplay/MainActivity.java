@@ -326,6 +326,9 @@ public class MainActivity extends Activity {
                             + ",\"show_ip\":" + (DisplaySettings.isShowIp(this) ? "true" : "false")
                             + ",\"keep_screen_on\":" + (DisplaySettings.isKeepScreenOn(this) ? "true" : "false")
                             + ",\"brightness\":" + String.format(Locale.US, "%.2f", DisplaySettings.getBrightness(this))
+                            + ",\"blink_enabled\":" + (DisplaySettings.isBlinkEnabled(this) ? "true" : "false")
+                            + ",\"blink_speed\":\"" + escapeJson(DisplaySettings.getBlinkSpeedName(this)) + "\""
+                            + ",\"blink_type\":\"" + escapeJson(DisplaySettings.getBlinkTypeName(this)) + "\""
                             + "}";
                 } else {
                     contentType = "text/html; charset=utf-8";
@@ -428,6 +431,9 @@ public class MainActivity extends Activity {
         private int textColor = DisplaySettings.DEFAULT_TEXT_COLOR;
         private int bgColor = DisplaySettings.DEFAULT_BG_COLOR;
         private boolean showIp = DisplaySettings.DEFAULT_SHOW_IP;
+        private boolean blinkEnabled = DisplaySettings.DEFAULT_BLINK_ENABLED;
+        private int blinkSpeed = DisplaySettings.DEFAULT_BLINK_SPEED;
+        private int blinkType = DisplaySettings.DEFAULT_BLINK_TYPE;
         private boolean bgImageEnabled = false;
         private String bgImagePath = "";
         private Bitmap bgBitmap;
@@ -455,6 +461,9 @@ public class MainActivity extends Activity {
             textColor = DisplaySettings.getTextColor(getContext());
             bgColor = DisplaySettings.getBgColor(getContext());
             showIp = DisplaySettings.isShowIp(getContext());
+            blinkEnabled = DisplaySettings.isBlinkEnabled(getContext());
+            blinkSpeed = DisplaySettings.getBlinkSpeed(getContext());
+            blinkType = DisplaySettings.getBlinkType(getContext());
             boolean enabled = DisplaySettings.isBgImageEnabled(getContext());
             String path = DisplaySettings.getBgImagePath(getContext());
             if (path == null) path = "";
@@ -554,9 +563,18 @@ public class MainActivity extends Activity {
             scrolling = textWidth > availableWidth;
 
             if (!scrolling) {
-                float x = (w - textWidth) / 2f;
-                canvas.drawText(current, x, baseline, paint);
+                int alpha = getStaticBlinkAlpha();
+                if (alpha > 0) {
+                    paint.setAlpha(alpha);
+                    float x = (w - textWidth) / 2f;
+                    canvas.drawText(current, x, baseline, paint);
+                    paint.setAlpha(255);
+                }
+                if (blinkEnabled) {
+                    postInvalidateDelayed(30);
+                }
             } else {
+                paint.setAlpha(255);
                 float speedPxPerSec = Math.max(90f, w * 0.085f); // About 160px/s on 1920px width.
                 float gap = Math.max(80f, w * 0.08f);
                 float cycle = textWidth + gap + w;
@@ -568,6 +586,40 @@ public class MainActivity extends Activity {
                     canvas.drawText(current, x + textWidth + gap, baseline, paint);
                 }
                 postInvalidateDelayed(16);
+            }
+        }
+
+        private int getStaticBlinkAlpha() {
+            if (!blinkEnabled) return 255;
+
+            int period;
+            switch (blinkSpeed) {
+                case DisplaySettings.BLINK_SPEED_SLOW:
+                    period = 1200;
+                    break;
+                case DisplaySettings.BLINK_SPEED_FAST:
+                    period = 360;
+                    break;
+                case DisplaySettings.BLINK_SPEED_NORMAL:
+                default:
+                    period = 700;
+                    break;
+            }
+            long phaseMs = SystemClock.uptimeMillis() % period;
+            float phase = phaseMs / (float) period;
+
+            switch (blinkType) {
+                case DisplaySettings.BLINK_TYPE_FADE:
+                    // Smooth breathing blink: never fully disappears, so warning text remains readable.
+                    double wave = 0.5d + 0.5d * Math.cos(phase * Math.PI * 2d);
+                    return 45 + Math.round((float) wave * 210f);
+                case DisplaySettings.BLINK_TYPE_DOUBLE:
+                    // Alert-style double flash: on, off, on, then a short dark interval.
+                    if (phase < 0.18f || (phase >= 0.34f && phase < 0.52f)) return 255;
+                    return 0;
+                case DisplaySettings.BLINK_TYPE_HARD:
+                default:
+                    return phase < 0.5f ? 255 : 0;
             }
         }
 

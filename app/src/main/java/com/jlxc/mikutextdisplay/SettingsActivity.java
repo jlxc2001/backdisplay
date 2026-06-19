@@ -4,6 +4,8 @@ import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
 import android.graphics.Color;
 import android.net.Uri;
 import android.net.wifi.WifiInfo;
@@ -53,8 +55,12 @@ public class SettingsActivity extends Activity {
     private Button bgColorButton;
     private Button showIpButton;
     private Button keepOnButton;
+    private Button launcherButton;
     private Button brightnessButton;
     private Button bgImageButton;
+    private Button blinkButton;
+    private Button blinkSpeedButton;
+    private Button blinkTypeButton;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -145,11 +151,41 @@ public class SettingsActivity extends Activity {
         });
         row.addView(showIpButton, cellParams(160));
 
+        blinkButton = makeButton("文字闪烁");
+        blinkButton.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { toggleBlink(); }
+        });
+        row.addView(blinkButton, cellParams(170));
+
+        blinkSpeedButton = makeButton("闪烁快慢");
+        blinkSpeedButton.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { cycleBlinkSpeed(); }
+        });
+        row.addView(blinkSpeedButton, cellParams(170));
+
+        blinkTypeButton = makeButton("闪烁类型");
+        blinkTypeButton.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { cycleBlinkType(); }
+        });
+        row.addView(blinkTypeButton, cellParams(170));
+
         keepOnButton = makeButton("屏幕常亮");
         keepOnButton.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { toggleKeepScreenOn(); }
         });
         row.addView(keepOnButton, cellParams(170));
+
+        launcherButton = makeButton("设为Launcher");
+        launcherButton.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { openLauncherSettings(); }
+        });
+        row.addView(launcherButton, cellParams(220));
+
+        Button goHome = makeButton("回到桌面");
+        goHome.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { goHome(); }
+        });
+        row.addView(goHome, cellParams(170));
 
         Button brightnessDown = makeButton("亮度-");
         brightnessDown.setOnClickListener(new View.OnClickListener() {
@@ -216,6 +252,7 @@ public class SettingsActivity extends Activity {
         int bgColor = DisplaySettings.getBgColor(this);
         boolean showIp = DisplaySettings.isShowIp(this);
         boolean keepOn = DisplaySettings.isKeepScreenOn(this);
+        boolean blink = DisplaySettings.isBlinkEnabled(this);
         float brightness = DisplaySettings.getBrightness(this);
         boolean hasBgImage = DisplaySettings.isBgImageEnabled(this);
 
@@ -230,7 +267,11 @@ public class SettingsActivity extends Activity {
 
         bgImageButton.setText(hasBgImage ? "背景图\n已启用" : "选择背景图");
         showIpButton.setText(showIp ? "显示IP\n开" : "显示IP\n关");
+        blinkButton.setText(blink ? "文字闪烁\n开" : "文字闪烁\n关");
+        blinkSpeedButton.setText("闪烁快慢\n" + DisplaySettings.getBlinkSpeedName(this));
+        blinkTypeButton.setText("闪烁类型\n" + DisplaySettings.getBlinkTypeName(this));
         keepOnButton.setText(keepOn ? "屏幕常亮\n开" : "屏幕常亮\n关");
+        launcherButton.setText(isDefaultLauncher() ? "默认Launcher\n已启用" : "设为Launcher\n点此选择");
         brightnessButton.setText("亮度\n" + Math.round(brightness * 100f) + "%");
     }
 
@@ -271,11 +312,78 @@ public class SettingsActivity extends Activity {
         refreshButtons();
     }
 
+    private void toggleBlink() {
+        boolean next = !DisplaySettings.isBlinkEnabled(this);
+        DisplaySettings.prefs(this).edit().putBoolean(DisplaySettings.KEY_BLINK_ENABLED, next).apply();
+        refreshButtons();
+        Toast.makeText(this, next ? "静态文字闪烁已开启，滚动文字不闪烁" : "文字闪烁已关闭", Toast.LENGTH_SHORT).show();
+    }
+
+    private void cycleBlinkSpeed() {
+        int current = DisplaySettings.getBlinkSpeed(this);
+        int next = current + 1;
+        if (next > DisplaySettings.BLINK_SPEED_FAST) next = DisplaySettings.BLINK_SPEED_SLOW;
+        DisplaySettings.prefs(this).edit().putInt(DisplaySettings.KEY_BLINK_SPEED, next).apply();
+        refreshButtons();
+    }
+
+    private void cycleBlinkType() {
+        int current = DisplaySettings.getBlinkType(this);
+        int next = current + 1;
+        if (next > DisplaySettings.BLINK_TYPE_DOUBLE) next = DisplaySettings.BLINK_TYPE_HARD;
+        DisplaySettings.prefs(this).edit().putInt(DisplaySettings.KEY_BLINK_TYPE, next).apply();
+        refreshButtons();
+    }
+
     private void toggleKeepScreenOn() {
         boolean next = !DisplaySettings.isKeepScreenOn(this);
         DisplaySettings.prefs(this).edit().putBoolean(DisplaySettings.KEY_KEEP_SCREEN_ON, next).apply();
         applyKeepScreenOn();
         refreshButtons();
+    }
+
+    private boolean isDefaultLauncher() {
+        try {
+            Intent intent = new Intent(Intent.ACTION_MAIN);
+            intent.addCategory(Intent.CATEGORY_HOME);
+            ResolveInfo info = getPackageManager().resolveActivity(intent, PackageManager.MATCH_DEFAULT_ONLY);
+            if (info == null || info.activityInfo == null) return false;
+            return getPackageName().equals(info.activityInfo.packageName);
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private void openLauncherSettings() {
+        // Android does not allow a normal app to silently set itself as the default Home app.
+        // This opens the system Home settings / chooser so the user can select MikuTextDisplayNode.
+        try {
+            Intent intent = new Intent("android.settings.HOME_SETTINGS");
+            startActivity(intent);
+            Toast.makeText(this, "请选择 MikuTextDisplayNode 作为默认桌面", Toast.LENGTH_LONG).show();
+            return;
+        } catch (Throwable ignored) {}
+
+        try {
+            Intent intent = new Intent(Intent.ACTION_MAIN);
+            intent.addCategory(Intent.CATEGORY_HOME);
+            intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
+            Toast.makeText(this, "请选择 MikuTextDisplayNode 作为默认桌面", Toast.LENGTH_LONG).show();
+        } catch (Throwable e) {
+            Toast.makeText(this, "无法打开桌面选择器，可在系统设置中设置默认桌面", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void goHome() {
+        try {
+            Intent intent = new Intent(Intent.ACTION_MAIN);
+            intent.addCategory(Intent.CATEGORY_HOME);
+            intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
+        } catch (Throwable e) {
+            Toast.makeText(this, "无法返回桌面", Toast.LENGTH_SHORT).show();
+        }
     }
 
     private void adjustBrightness(float delta) {
@@ -303,6 +411,9 @@ public class SettingsActivity extends Activity {
         e.putBoolean(DisplaySettings.KEY_SHOW_IP, DisplaySettings.DEFAULT_SHOW_IP);
         e.putBoolean(DisplaySettings.KEY_KEEP_SCREEN_ON, DisplaySettings.DEFAULT_KEEP_SCREEN_ON);
         e.putFloat(DisplaySettings.KEY_BRIGHTNESS, DisplaySettings.DEFAULT_BRIGHTNESS);
+        e.putBoolean(DisplaySettings.KEY_BLINK_ENABLED, DisplaySettings.DEFAULT_BLINK_ENABLED);
+        e.putInt(DisplaySettings.KEY_BLINK_SPEED, DisplaySettings.DEFAULT_BLINK_SPEED);
+        e.putInt(DisplaySettings.KEY_BLINK_TYPE, DisplaySettings.DEFAULT_BLINK_TYPE);
         e.putBoolean(DisplaySettings.KEY_BG_IMAGE_ENABLED, false);
         e.putString(DisplaySettings.KEY_BG_IMAGE_PATH, "");
         e.apply();
