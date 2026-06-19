@@ -6,9 +6,13 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
+import android.graphics.Rect;
+import android.graphics.RectF;
 import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
 import android.os.Bundle;
@@ -61,18 +65,27 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         requestWindowFeature(Window.FEATURE_NO_TITLE);
         getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN);
-        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        applyScreenSettings();
         hideSystemUi();
 
-        PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
-        if (pm != null) {
-            wakeLock = pm.newWakeLock(PowerManager.SCREEN_BRIGHT_WAKE_LOCK | PowerManager.ON_AFTER_RELEASE, "MikuTextDisplayNode:ScreenLock");
-            try { wakeLock.acquire(); } catch (Throwable ignored) {}
-        }
-
         textView = new TextDisplayView(this);
+        textView.setOnLongClickListener(new View.OnLongClickListener() {
+            @Override
+            public boolean onLongClick(View v) {
+                openSettings();
+                return true;
+            }
+        });
+
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(Color.BLACK);
+        root.setOnLongClickListener(new View.OnLongClickListener() {
+            @Override
+            public boolean onLongClick(View v) {
+                openSettings();
+                return true;
+            }
+        });
         FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT,
@@ -83,6 +96,7 @@ public class MainActivity extends Activity {
         SharedPreferences sp = getSharedPreferences(CommandReceiver.PREFS, Context.MODE_PRIVATE);
         String text = sp.getString(CommandReceiver.KEY_TEXT, "READY");
         textView.setText(text == null ? "" : text);
+        textView.applySettings();
 
         registerReceiver(internalReceiver, new IntentFilter(CommandReceiver.ACTION_INTERNAL_UPDATE));
         startUdpServer();
@@ -101,6 +115,8 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        applyScreenSettings();
+        if (textView != null) textView.applySettings();
         hideSystemUi();
     }
 
@@ -128,8 +144,41 @@ public class MainActivity extends Activity {
         try { unregisterReceiver(internalReceiver); } catch (Throwable ignored) {}
         try { if (udpSocket != null) udpSocket.close(); } catch (Throwable ignored) {}
         try { if (httpServerSocket != null) httpServerSocket.close(); } catch (Throwable ignored) {}
-        try { if (wakeLock != null && wakeLock.isHeld()) wakeLock.release(); } catch (Throwable ignored) {}
+        releaseWakeLock();
         super.onDestroy();
+    }
+
+    private void openSettings() {
+        Intent intent = new Intent(this, SettingsActivity.class);
+        startActivity(intent);
+    }
+
+    private void applyScreenSettings() {
+        if (DisplaySettings.isKeepScreenOn(this)) {
+            getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            acquireWakeLock();
+        } else {
+            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            releaseWakeLock();
+        }
+        WindowManager.LayoutParams lp = getWindow().getAttributes();
+        lp.screenBrightness = DisplaySettings.getBrightness(this);
+        getWindow().setAttributes(lp);
+    }
+
+    private void acquireWakeLock() {
+        try {
+            if (wakeLock != null && wakeLock.isHeld()) return;
+            PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+            if (pm != null) {
+                wakeLock = pm.newWakeLock(PowerManager.SCREEN_BRIGHT_WAKE_LOCK | PowerManager.ON_AFTER_RELEASE, "MikuTextDisplayNode:ScreenLock");
+                wakeLock.acquire();
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private void releaseWakeLock() {
+        try { if (wakeLock != null && wakeLock.isHeld()) wakeLock.release(); } catch (Throwable ignored) {}
     }
 
     private void hideSystemUi() {
@@ -190,7 +239,7 @@ public class MainActivity extends Activity {
         if (s.startsWith("\uFEFF")) s = s.substring(1);
         String upper = s.toUpperCase(Locale.US);
         if (upper.equals("PING")) {
-            sendUdpReply("PONG miku_text_node udp=" + UDP_PORT + " http=" + HTTP_PORT, address, port);
+            sendUdpReply("PONG miku_text_node udp=" + UDP_PORT + " http=" + HTTP_PORT + " ip=" + getLocalIp(), address, port);
             return;
         }
         if (upper.equals("CLEAR") || upper.equals("OFF")) {
@@ -263,21 +312,29 @@ public class MainActivity extends Activity {
                     setDisplayText("", true);
                     body = "OK CLEAR";
                 } else if (uri.startsWith("/ping")) {
-                    body = "PONG miku_text_node";
+                    body = "PONG miku_text_node ip=" + getLocalIp();
                 } else if (uri.startsWith("/status")) {
                     contentType = "application/json; charset=utf-8";
                     String current = textView == null ? "" : textView.getTextValue();
                     body = "{\"type\":\"miku_text_node\",\"status\":1,\"udp_port\":" + UDP_PORT
                             + ",\"http_port\":" + HTTP_PORT
                             + ",\"ip\":\"" + escapeJson(getLocalIp()) + "\""
-                            + ",\"text\":\"" + escapeJson(current) + "\"}"
-                            ;
+                            + ",\"text\":\"" + escapeJson(current) + "\""
+                            + ",\"text_color\":\"" + escapeJson(DisplaySettings.colorToHex(DisplaySettings.getTextColor(this))) + "\""
+                            + ",\"background_color\":\"" + escapeJson(DisplaySettings.colorToHex(DisplaySettings.getBgColor(this))) + "\""
+                            + ",\"background_image\":" + (DisplaySettings.isBgImageEnabled(this) ? "true" : "false")
+                            + ",\"show_ip\":" + (DisplaySettings.isShowIp(this) ? "true" : "false")
+                            + ",\"keep_screen_on\":" + (DisplaySettings.isKeepScreenOn(this) ? "true" : "false")
+                            + ",\"brightness\":" + String.format(Locale.US, "%.2f", DisplaySettings.getBrightness(this))
+                            + "}";
                 } else {
                     contentType = "text/html; charset=utf-8";
                     body = "<html><body><h3>MikuTextDisplayNode</h3>"
+                            + "<p>IP: " + escapeHtml(getLocalIp()) + "</p>"
                             + "<p>UDP: " + UDP_PORT + "</p>"
                             + "<p>HTTP: " + HTTP_PORT + "</p>"
                             + "<p>Use /show?text=hello , /clear , /status , /ping</p>"
+                            + "<p>Long press the strip screen to open local settings.</p>"
                             + "</body></html>";
                 }
             }
@@ -343,6 +400,11 @@ public class MainActivity extends Activity {
         return sb.toString();
     }
 
+    private String escapeHtml(String s) {
+        if (s == null) return "";
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;");
+    }
+
     private String getLocalIp() {
         try {
             WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
@@ -356,19 +418,27 @@ public class MainActivity extends Activity {
         }
     }
 
-    public static class TextDisplayView extends View {
+    public class TextDisplayView extends View {
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.SUBPIXEL_TEXT_FLAG);
+        private final Paint ipPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.SUBPIXEL_TEXT_FLAG);
         private String text = "READY";
         private long marqueeStart = SystemClock.uptimeMillis();
-        private float lastTextWidth = 0f;
         private boolean scrolling = false;
+
+        private int textColor = DisplaySettings.DEFAULT_TEXT_COLOR;
+        private int bgColor = DisplaySettings.DEFAULT_BG_COLOR;
+        private boolean showIp = DisplaySettings.DEFAULT_SHOW_IP;
+        private boolean bgImageEnabled = false;
+        private String bgImagePath = "";
+        private Bitmap bgBitmap;
+        private long lastBgDecode = 0;
 
         public TextDisplayView(Context context) {
             super(context);
-            setBackgroundColor(Color.BLACK);
-            paint.setColor(Color.WHITE);
             paint.setTextAlign(Paint.Align.LEFT);
             paint.setFakeBoldText(true);
+            ipPaint.setTextAlign(Paint.Align.RIGHT);
+            ipPaint.setFakeBoldText(false);
         }
 
         public synchronized void setText(String value) {
@@ -381,23 +451,94 @@ public class MainActivity extends Activity {
             return text;
         }
 
+        public void applySettings() {
+            textColor = DisplaySettings.getTextColor(getContext());
+            bgColor = DisplaySettings.getBgColor(getContext());
+            showIp = DisplaySettings.isShowIp(getContext());
+            boolean enabled = DisplaySettings.isBgImageEnabled(getContext());
+            String path = DisplaySettings.getBgImagePath(getContext());
+            if (path == null) path = "";
+            if (enabled != bgImageEnabled || !path.equals(bgImagePath) || bgBitmap == null) {
+                bgImageEnabled = enabled;
+                bgImagePath = path;
+                decodeBackgroundBitmapIfNeeded(true);
+            }
+            invalidate();
+        }
+
+        private void decodeBackgroundBitmapIfNeeded(boolean force) {
+            if (!bgImageEnabled || bgImagePath.length() == 0) {
+                if (bgBitmap != null) {
+                    try { bgBitmap.recycle(); } catch (Throwable ignored) {}
+                    bgBitmap = null;
+                }
+                return;
+            }
+            long now = SystemClock.uptimeMillis();
+            if (!force && bgBitmap != null && now - lastBgDecode < 30000) return;
+            try {
+                BitmapFactory.Options opts = new BitmapFactory.Options();
+                opts.inPreferredConfig = Bitmap.Config.RGB_565;
+                Bitmap bm = BitmapFactory.decodeFile(bgImagePath, opts);
+                if (bm != null) {
+                    if (bgBitmap != null && bgBitmap != bm) {
+                        try { bgBitmap.recycle(); } catch (Throwable ignored) {}
+                    }
+                    bgBitmap = bm;
+                    lastBgDecode = now;
+                }
+            } catch (Throwable ignored) {}
+        }
+
         @Override
         protected void onDraw(Canvas canvas) {
-            super.onDraw(canvas);
             final int w = getWidth();
             final int h = getHeight();
             if (w <= 0 || h <= 0) return;
 
+            drawBackground(canvas, w, h);
+
             String current;
             synchronized (this) { current = text; }
-            if (current == null || current.length() == 0) {
-                return;
-            }
 
+            boolean hasIp = showIp;
+            String ip = hasIp ? "IP " + getLocalIp() : "";
+            float ipTextSize = Math.max(10f, h * 0.15f);
+            float ipReserveBottom = hasIp ? Math.max(18f, ipTextSize + 5f) : 0f;
+
+            if (current != null && current.length() > 0) {
+                drawMainText(canvas, current, w, h, ipReserveBottom);
+            }
+            if (hasIp) {
+                drawIp(canvas, ip, w, h, ipTextSize);
+            }
+        }
+
+        private void drawBackground(Canvas canvas, int w, int h) {
+            canvas.drawColor(bgColor);
+            if (!bgImageEnabled) return;
+            decodeBackgroundBitmapIfNeeded(false);
+            if (bgBitmap == null || bgBitmap.isRecycled()) return;
+            int bw = bgBitmap.getWidth();
+            int bh = bgBitmap.getHeight();
+            if (bw <= 0 || bh <= 0) return;
+
+            float scale = Math.max(w / (float) bw, h / (float) bh);
+            float dw = bw * scale;
+            float dh = bh * scale;
+            float left = (w - dw) / 2f;
+            float top = (h - dh) / 2f;
+            Rect src = new Rect(0, 0, bw, bh);
+            RectF dst = new RectF(left, top, left + dw, top + dh);
+            canvas.drawBitmap(bgBitmap, src, dst, null);
+        }
+
+        private void drawMainText(Canvas canvas, String current, int w, int h, float ipReserveBottom) {
             int padX = Math.max(8, Math.round(w * 0.015f));
             int padY = Math.max(2, Math.round(h * 0.10f));
-            float targetHeight = Math.max(20f, h - padY * 2f);
+            float targetHeight = Math.max(20f, h - padY * 2f - ipReserveBottom);
 
+            paint.setColor(textColor);
             paint.setTextSize(targetHeight);
             Paint.FontMetrics fm = paint.getFontMetrics();
             float actualHeight = fm.descent - fm.ascent;
@@ -406,9 +547,9 @@ public class MainActivity extends Activity {
             }
 
             fm = paint.getFontMetrics();
-            float baseline = h / 2f - (fm.ascent + fm.descent) / 2f;
+            float textAreaCenterY = (h - ipReserveBottom) / 2f;
+            float baseline = textAreaCenterY - (fm.ascent + fm.descent) / 2f;
             float textWidth = paint.measureText(current);
-            lastTextWidth = textWidth;
             float availableWidth = w - padX * 2f;
             scrolling = textWidth > availableWidth;
 
@@ -428,6 +569,19 @@ public class MainActivity extends Activity {
                 }
                 postInvalidateDelayed(16);
             }
+        }
+
+        private void drawIp(Canvas canvas, String ip, int w, int h, float textSize) {
+            ipPaint.setColor(applyAlpha(textColor, 0.72f));
+            ipPaint.setTextSize(textSize);
+            Paint.FontMetrics fm = ipPaint.getFontMetrics();
+            float baseline = h - 4f - fm.descent;
+            canvas.drawText(ip, w - 10f, baseline, ipPaint);
+        }
+
+        private int applyAlpha(int color, float alpha) {
+            int a = Math.round(Color.alpha(color) * alpha);
+            return Color.argb(a, Color.red(color), Color.green(color), Color.blue(color));
         }
     }
 }
